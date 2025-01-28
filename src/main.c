@@ -1,3 +1,23 @@
+// Copyright (c) 2012-2017 Texas Instruments Incorporated.  All rights reserved.
+// Software License Agreement
+//
+// Texas Instruments (TI) is supplying this software for use solely and
+// exclusively on TI's microcontroller products. The software is owned by
+// TI and/or its suppliers, and is protected under applicable copyright
+// laws. You may not combine this software with "viral" open-source
+// software in order to form a larger program.
+//
+// THIS SOFTWARE IS PROVIDED "AS IS" AND WITH ALL FAULTS.
+// NO WARRANTIES, WHETHER EXPRESS, IMPLIED OR STATUTORY, INCLUDING, BUT
+// NOT LIMITED TO, IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE APPLY TO THIS SOFTWARE. TI SHALL NOT, UNDER ANY
+// CIRCUMSTANCES, BE LIABLE FOR SPECIAL, INCIDENTAL, OR CONSEQUENTIAL
+// DAMAGES, FOR ANY REASON WHATSOEVER.
+//
+// This is part of revision 2.1.4.178 of the EK-TM4C123GXL Firmware Package.
+//
+//*****************************************************************************
+
 #include <stdio.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -28,8 +48,12 @@
 #define COMMAND_MAX_LEN 4
 #define NUM_COMMANDS 2
 
+const uint32_t DECAY_COUNT_THRESHOLD = 20000;
+const uint16_t TAPE_MS_THRESHOLD = 2000;
+const uint8_t TAPE_MS_MIN = 10;
+
 // Semaphore definitions
-SemaphoreHandle_t xUARTSemaphore;
+SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 
 void robotSTART();
@@ -45,6 +69,13 @@ typedef struct
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
 volatile uint8_t commandIdx = 0;
+
+volatile uint64_t decayStartCount = 0;
+volatile uint64_t decayElapsedCount = 0;
+volatile uint64_t onTapeStartCount = 0;
+volatile uint64_t onTapeElapsedCount = 0;
+volatile uint64_t onTapeElapsedms = 0;
+volatile bool wasOnTape = false;
 
 const CommandCallback commandCallbacks[NUM_COMMANDS] =
 {
@@ -115,15 +146,61 @@ void WTimer1IntHandler(void)
     }
 }
 
+void GPIODIntHandler(void)
+{
+    GPIOIntClear(GPIO_PORTD_BASE, GPIO_INT_PIN_2);
+    decayElapsedCount = TimerValueGet64(WTIMER0_BASE) - decayStartCount;
+
+    // On dark surface
+    if(decayElapsedCount >= 20000)
+    {
+        if(!wasOnTape)
+        {
+            wasOnTape = true;
+            onTapeStartCount = TimerValueGet64(WTIMER0_BASE);
+        }
+    }
+    // On bright surface
+    else
+    {
+        if(wasOnTape)
+        {
+            wasOnTape = false;
+            onTapeElapsedCount = TimerValueGet64(WTIMER0_BASE) - onTapeStartCount;
+            onTapeElapsedms = (uint64_t)(onTapeElapsedCount * 1.0/SysCtlClockGet() * 1000);
+            UARTprintf("%i\n", (int)onTapeElapsedms);
+
+            if(onTapeElapsedms > TAPE_MS_MIN)
+            {
+                // Thin line crossed
+                if(onTapeElapsedms < TAPE_MS_THRESHOLD)
+                {
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_2);
+                }
+                // Thick line crossed
+                else
+                {
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_3);
+                }
+            }
+        }
+    }
+}
 
 void vTask0(void* pvParameters)
 {
     while (1)
     {
-        GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, GPIO_PIN_2);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_2, 0);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            UARTprintf("Task 0 is printing\n");
+            xSemaphoreGive(xUART1Semaphore);
+        }
+
     }
 }
 
@@ -131,19 +208,13 @@ void vTask1(void* pvParameters)
 {
     while (1)
     {
-//        GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
-//        SysCtlDelay(SysCtlClockGet()/3 * 1);
-//        GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
-//        SysCtlDelay(SysCtlClockGet()/3 * 1);
-        // Wait for the semaphore to be given
         if (xSemaphoreTake(xTask1Semaphore, portMAX_DELAY) == pdTRUE)
         {
-//            SysCtlDelay(SysCtlClockGet()/3 * 10);
-            // Toggle the LED
-            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
-//            vTaskDelay(pdMS_TO_TICKS(500));
-//            GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
-//            vTaskDelay(pdMS_TO_TICKS(500));
+            GPIOPinTypeGPIOOutput(GPIO_PORTD_BASE, GPIO_PIN_2);
+            GPIOPinWrite(GPIO_PORTD_BASE, GPIO_PIN_2, GPIO_PIN_2);
+            SysCtlDelay(SysCtlClockGet()/3 * 10.0/100000);
+            GPIOPinTypeGPIOInput(GPIO_PORTD_BASE, GPIO_PIN_2);
+            decayStartCount = TimerValueGet64(WTIMER0_BASE);
         }
     }
 }
@@ -152,6 +223,7 @@ void EnableSystemPeripherals()
 {
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOA);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOB);
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOD);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOE);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_GPIOF);
     SysCtlPeripheralEnable(SYSCTL_PERIPH_UART0);
@@ -184,6 +256,7 @@ void InitializeUART0()
         UART_CONFIG_PAR_NONE
     );
     UARTEnable(UART0_BASE);
+    UARTStdioConfig(0, 9600, SysCtlClockGet());
 }
 
 // Initialize UART for the Bluetooth module
@@ -206,10 +279,10 @@ void InitializeUART1()
     UARTIntEnable(UART1_BASE, UART_INT_RX | UART_INT_RT);
 
     UARTEnable(UART1_BASE);
-    UARTStdioConfig(1, 9600, SysCtlClockGet());
+//    UARTStdioConfig(1, 9600, SysCtlClockGet());
 }
 
-// Initialize timer that keeps track of program time
+// Initialize timer that counts up indefinitely to measure elapsed count
 void InitializeWTimer0()
 {
     TimerConfigure(WTIMER0_BASE, TIMER_CFG_ONE_SHOT_UP);
@@ -220,12 +293,21 @@ void InitializeWTimer0()
 void InitializeWTimer1()
 {
     TimerConfigure(WTIMER1_BASE, TIMER_CFG_A_PERIODIC | TIMER_CFG_SPLIT_PAIR);
-    TimerIntEnable(WTIMER1_BASE, TIMER_TIMA_TIMEOUT);
     IntEnable(INT_WTIMER1A);
+    TimerIntEnable(WTIMER1_BASE, TIMER_TIMA_TIMEOUT);
     IntPrioritySet(INT_WTIMER1A, 0xA0);
     IntRegister(INT_WTIMER1A, WTimer1IntHandler);
-    TimerLoadSet(WTIMER1_BASE, TIMER_A, SysCtlClockGet() * 5);
+    TimerLoadSet(WTIMER1_BASE, TIMER_A, SysCtlClockGet() * 0.007);
     TimerEnable(WTIMER1_BASE, TIMER_A);
+}
+
+void InitializeGPIODInterrupt()
+{
+    IntEnable(INT_GPIOD);
+    GPIOIntEnable(GPIO_PORTD_BASE, GPIO_INT_PIN_2);
+    GPIOIntTypeSet(GPIO_PORTD_BASE, GPIO_PIN_2, GPIO_FALLING_EDGE);
+    IntRegister(INT_GPIOD, GPIODIntHandler);
+    IntPrioritySet(INT_GPIOD, 0xA0);
 }
 
 void robotSTART()
@@ -258,6 +340,8 @@ int main(void)
 
     InitializeWTimer1();
 
+    InitializeGPIODInterrupt();
+
 //    GPIOPinWrite(GPIO_PORTF_BASE,
 //                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
 //                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3);
@@ -265,10 +349,12 @@ int main(void)
 
     // Create Semaphores
     xTask1Semaphore = xSemaphoreCreateBinary();
+    xUART1Semaphore = xSemaphoreCreateBinary();
 
 //    xTaskCreate(vTask0, "Task 0", 256, NULL, 1, NULL);
-//    xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
+    xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
 
+    xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
 
 
