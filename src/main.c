@@ -48,6 +48,10 @@
 #define COMMAND_MAX_LEN 4
 #define NUM_COMMANDS 2
 
+const uint32_t DECAY_COUNT_THRESHOLD = 20000;
+const uint16_t TAPE_MS_THRESHOLD = 2000;
+const uint8_t TAPE_MS_MIN = 10;
+
 // Semaphore definitions
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
@@ -70,6 +74,7 @@ volatile uint64_t decayStartCount = 0;
 volatile uint64_t decayElapsedCount = 0;
 volatile uint64_t onTapeStartCount = 0;
 volatile uint64_t onTapeElapsedCount = 0;
+volatile uint64_t onTapeElapsedms = 0;
 volatile bool wasOnTape = false;
 
 const CommandCallback commandCallbacks[NUM_COMMANDS] =
@@ -149,12 +154,40 @@ void GPIODIntHandler(void)
     // On dark surface
     if(decayElapsedCount >= 20000)
     {
-
+        if(!wasOnTape)
+        {
+            wasOnTape = true;
+            onTapeStartCount = TimerValueGet64(WTIMER0_BASE);
+        }
     }
     // On bright surface
     else
     {
+        if(wasOnTape)
+        {
+            wasOnTape = false;
+            onTapeElapsedCount = TimerValueGet64(WTIMER0_BASE) - onTapeStartCount;
+            onTapeElapsedms = (uint64_t)(onTapeElapsedCount * 1.0/SysCtlClockGet() * 1000);
+            UARTprintf("%i\n", (int)onTapeElapsedms);
 
+            if(onTapeElapsedms > TAPE_MS_MIN)
+            {
+                // Thin line crossed
+                if(onTapeElapsedms < TAPE_MS_THRESHOLD)
+                {
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_2);
+                }
+                // Thick line crossed
+                else
+                {
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_3);
+                }
+            }
+        }
     }
 }
 
@@ -264,7 +297,7 @@ void InitializeWTimer1()
     TimerIntEnable(WTIMER1_BASE, TIMER_TIMA_TIMEOUT);
     IntPrioritySet(INT_WTIMER1A, 0xA0);
     IntRegister(INT_WTIMER1A, WTimer1IntHandler);
-    TimerLoadSet(WTIMER1_BASE, TIMER_A, SysCtlClockGet() * 1);
+    TimerLoadSet(WTIMER1_BASE, TIMER_A, SysCtlClockGet() * 0.007);
     TimerEnable(WTIMER1_BASE, TIMER_A);
 }
 
