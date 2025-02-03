@@ -58,6 +58,9 @@ SemaphoreHandle_t xTask1Semaphore;
 
 void robotSTART();
 void robotSTOP();
+void forward();
+void brake();
+void reverse();
 
 typedef void (*FunctionPointer)(void);
 
@@ -70,6 +73,7 @@ typedef struct
 volatile char commandBuffer[COMMAND_MAX_LEN];
 volatile uint8_t commandIdx = 0;
 
+volatile uint32_t totalPWMPeriodCount = 0;
 volatile uint64_t decayStartCount = 0;
 volatile uint64_t decayElapsedCount = 0;
 volatile uint64_t onTapeStartCount = 0;
@@ -301,6 +305,42 @@ void InitializeWTimer1()
     TimerEnable(WTIMER1_BASE, TIMER_A);
 }
 
+void InitializePWM0()
+{
+
+    // Setup PWM pins
+    GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_6);
+    GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_7);
+    GPIOPinConfigure(GPIO_PB6_M0PWM0);
+    GPIOPinConfigure(GPIO_PB7_M0PWM1);
+
+    // Setup phase pins
+    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_1);
+    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
+
+    // Sys Clock = 40Mhz PWMClock = 40/8 = 5MHz
+    SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
+
+    uint32_t PWMClockCount = SysCtlClockGet() / 8;
+
+    // Desired frequency = 10Khz
+    uint32_t desiredFrequency = 10000;
+
+    // 5MHz / 10Khz = 500 clock ticks
+    totalPWMPeriodCount = PWMClockCount/desiredFrequency;
+
+    PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, totalPWMPeriodCount);
+    PWMGenConfigure(PWM0_BASE, PWM_GEN_0, PWM_GEN_MODE_DOWN | PWM_GEN_MODE_NO_SYNC);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
+
+    // Enable generator and output
+    PWMGenEnable(PWM0_BASE, PWM_GEN_0);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+}
+
 void InitializeGPIODInterrupt()
 {
     IntEnable(INT_GPIOD);
@@ -318,6 +358,25 @@ void robotSTART()
 void robotSTOP()
 {
     UARTprintf("STOP CALLED\n");
+}
+
+void forward()
+{
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
+}
+
+void brake()
+{
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+}
+
+void reverse()
+{
+
 }
 
 int main(void)
@@ -339,6 +398,8 @@ int main(void)
     InitializeWTimer0();
 
     InitializeWTimer1();
+
+    InitializePWM0();
 
     InitializeGPIODInterrupt();
 
