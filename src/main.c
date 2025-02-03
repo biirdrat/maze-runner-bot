@@ -46,7 +46,7 @@
 #include "semphr.h"
 
 #define COMMAND_MAX_LEN 4
-#define NUM_COMMANDS 2
+#define NUM_COMMANDS 5
 
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
 const uint16_t TAPE_MS_THRESHOLD = 2000;
@@ -56,11 +56,11 @@ const uint8_t TAPE_MS_MIN = 10;
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 
-void robotSTART();
-void robotSTOP();
-void forward();
-void brake();
-void reverse();
+void RobotSTART();
+void RobotSTOP();
+void Forward();
+void Brake();
+void Reverse();
 
 typedef void (*FunctionPointer)(void);
 
@@ -83,8 +83,11 @@ volatile bool wasOnTape = false;
 
 const CommandCallback commandCallbacks[NUM_COMMANDS] =
 {
-    { "STR", robotSTART },
-    { "STP", robotSTOP },
+    { "STR", RobotSTART },
+    { "STP", RobotSTOP },
+    { "FWD", Forward },
+    { "BRK", Brake },
+    { "REV", Reverse },
 };
 
 // The error routine that is called if the driver library encounters an error.
@@ -260,7 +263,6 @@ void InitializeUART0()
         UART_CONFIG_PAR_NONE
     );
     UARTEnable(UART0_BASE);
-    UARTStdioConfig(0, 9600, SysCtlClockGet());
 }
 
 // Initialize UART for the Bluetooth module
@@ -283,7 +285,7 @@ void InitializeUART1()
     UARTIntEnable(UART1_BASE, UART_INT_RX | UART_INT_RT);
 
     UARTEnable(UART1_BASE);
-//    UARTStdioConfig(1, 9600, SysCtlClockGet());
+    UARTStdioConfig(1, 9600, SysCtlClockGet());
 }
 
 // Initialize timer that counts up indefinitely to measure elapsed count
@@ -307,14 +309,13 @@ void InitializeWTimer1()
 
 void InitializePWM0()
 {
-
-    // Setup PWM pins
+    // Setup PWM pins PB6-Left Motor PB7-Right Motor
     GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_6);
     GPIOPinTypePWM(GPIO_PORTB_BASE, GPIO_PIN_7);
     GPIOPinConfigure(GPIO_PB6_M0PWM0);
     GPIOPinConfigure(GPIO_PB7_M0PWM1);
 
-    // Setup phase pins
+    // Setup phase pins PE1-Left Phase PE2-Right Phase
     GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_1);
     GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_2);
     GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
@@ -328,7 +329,7 @@ void InitializePWM0()
     // Desired frequency = 10Khz
     uint32_t desiredFrequency = 10000;
 
-    // 5MHz / 10Khz = 500 clock ticks
+    // Total Period Count = 5MHz / 10Khz = 500 clock ticks
     totalPWMPeriodCount = PWMClockCount/desiredFrequency;
 
     PWMGenPeriodSet(PWM0_BASE, PWM_GEN_0, totalPWMPeriodCount);
@@ -350,33 +351,39 @@ void InitializeGPIODInterrupt()
     IntPrioritySet(INT_GPIOD, 0xA0);
 }
 
-void robotSTART()
+void RobotSTART()
 {
     UARTprintf("START CALLED\n");
 }
 
-void robotSTOP()
+void RobotSTOP()
 {
     UARTprintf("STOP CALLED\n");
 }
 
-void forward()
+void Forward()
 {
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
 }
 
-void brake()
+void Brake()
 {
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
 }
 
-void reverse()
+void Reverse()
 {
-
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, GPIO_PIN_1);
+    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
 }
 
 int main(void)
