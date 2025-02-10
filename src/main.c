@@ -315,11 +315,11 @@ void InitializePWM0()
     GPIOPinConfigure(GPIO_PB6_M0PWM0);
     GPIOPinConfigure(GPIO_PB7_M0PWM1);
 
-    // Setup phase pins PE1-Left Phase PE2-Right Phase
-    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_1);
-    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_2);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
+    // Setup phase pins PA2-Left Phase PA3-Right Phase
+    GPIOPinTypeGPIOOutput(GPIO_PORTA_BASE, GPIO_PIN_2);
+    GPIOPinTypeGPIOOutput(GPIO_PORTA_BASE, GPIO_PIN_3);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
 
     // Sys Clock = 40Mhz PWMClock = 40/8 = 5MHz
     SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
@@ -363,8 +363,8 @@ void RobotSTOP()
 
 void Forward()
 {
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
@@ -379,8 +379,8 @@ void Brake()
 
 void Reverse()
 {
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, GPIO_PIN_1);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, GPIO_PIN_3);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
@@ -424,7 +424,6 @@ int main(void)
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
-
 
     // Start Task Scheduler
     vTaskStartScheduler();
