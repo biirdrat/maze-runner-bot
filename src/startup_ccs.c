@@ -62,6 +62,7 @@ extern void xPortSysTickHandler(void);
 
 extern void UART1IntHandler(void);
 extern void WTimer1IntHandler(void);
+extern void WTimer2IntHandler(void);
 extern void GPIODIntHandler(void);
 
 
@@ -190,7 +191,7 @@ void (* const g_pfnVectors[])(void) =
     IntDefaultHandler,                      // Wide Timer 0 subtimer B
     WTimer1IntHandler,                      // Wide Timer 1 subtimer A
     IntDefaultHandler,                      // Wide Timer 1 subtimer B
-    IntDefaultHandler,                      // Wide Timer 2 subtimer A
+    WTimer2IntHandler,                      // Wide Timer 2 subtimer A
     IntDefaultHandler,                      // Wide Timer 2 subtimer B
     IntDefaultHandler,                      // Wide Timer 3 subtimer A
     IntDefaultHandler,                      // Wide Timer 3 subtimer B

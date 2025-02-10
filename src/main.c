@@ -55,6 +55,7 @@ const uint8_t TAPE_MS_MIN = 10;
 // Semaphore definitions
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
+SemaphoreHandle_t xTask2Semaphore;
 
 void RobotSTART();
 void RobotSTOP();
@@ -80,6 +81,8 @@ volatile uint64_t onTapeStartCount = 0;
 volatile uint64_t onTapeElapsedCount = 0;
 volatile uint64_t onTapeElapsedms = 0;
 volatile bool wasOnTape = false;
+
+volatile uint32_t adcBuffer[2];
 
 const CommandCallback commandCallbacks[NUM_COMMANDS] =
 {
@@ -153,6 +156,23 @@ void WTimer1IntHandler(void)
     }
 }
 
+void WTimer2IntHandler(void)
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+    // Clear the timer interrupt flag
+    TimerIntClear(WTIMER2_BASE, TIMER_TIMA_TIMEOUT);
+
+    // Give the semaphore and check if a higher-priority task was woken
+    xSemaphoreGiveFromISR(xTask2Semaphore, &xHigherPriorityTaskWoken);
+
+    // Yield if a higher-priority task was woken
+    if (xHigherPriorityTaskWoken == pdTRUE)
+    {
+        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+    }
+}
+
 void GPIODIntHandler(void)
 {
     GPIOIntClear(GPIO_PORTD_BASE, GPIO_INT_PIN_2);
@@ -198,19 +218,7 @@ void GPIODIntHandler(void)
     }
 }
 
-void vTask0(void* pvParameters)
-{
-    while (1)
-    {
-        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
-        {
-            UARTprintf("Task 0 is printing\n");
-            xSemaphoreGive(xUART1Semaphore);
-        }
-
-    }
-}
-
+// Task to charge reflectance sensor
 void vTask1(void* pvParameters)
 {
     while (1)
@@ -223,6 +231,32 @@ void vTask1(void* pvParameters)
             GPIOPinTypeGPIOInput(GPIO_PORTD_BASE, GPIO_PIN_2);
             decayStartCount = TimerValueGet64(WTIMER0_BASE);
         }
+    }
+}
+
+// Task to update distance values
+void vTask2(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask2Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            ADCIntClear(ADC0_BASE, 1);
+            ADCProcessorTrigger(ADC0_BASE, 1);
+            while(!ADCIntStatus(ADC0_BASE, 1, false))
+            {
+            }
+            ADCSequenceDataGet(ADC0_BASE, 1, (uint32_t*)adcBuffer);
+            uint32_t rightADCValue = adcBuffer[0];
+            uint32_t frontADCValue = adcBuffer[1];
+            UARTprintf("%i %i\n", rightADCValue, frontADCValue);
+        }
+//        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+//        {
+//            UARTprintf("Task 0 is printing\n");
+//            xSemaphoreGive(xUART1Semaphore);
+//        }
+
     }
 }
 
@@ -279,11 +313,10 @@ void InitializeUART1()
         UART_CONFIG_STOP_ONE |
         UART_CONFIG_PAR_NONE
     );
-
-    IntPrioritySet(INT_UART1, 0xA0);
     IntEnable(INT_UART1);
     UARTIntEnable(UART1_BASE, UART_INT_RX | UART_INT_RT);
-
+    IntPrioritySet(INT_UART1, 0xA0);
+    IntRegister(INT_UART1_TM4C123, UART1IntHandler);
     UARTEnable(UART1_BASE);
     UARTStdioConfig(1, 9600, SysCtlClockGet());
 }
@@ -307,6 +340,17 @@ void InitializeWTimer1()
     TimerEnable(WTIMER1_BASE, TIMER_A);
 }
 
+void InitializeWTimer2()
+{
+    TimerConfigure(WTIMER2_BASE, TIMER_CFG_A_PERIODIC | TIMER_CFG_SPLIT_PAIR);
+    IntEnable(INT_WTIMER2A);
+    TimerIntEnable(WTIMER2_BASE, TIMER_TIMA_TIMEOUT);
+    IntPrioritySet(INT_WTIMER2A, 0xA0);
+    IntRegister(INT_WTIMER2A, WTimer2IntHandler);
+    TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * 0.05);
+    TimerEnable(WTIMER2_BASE, TIMER_A);
+}
+
 void InitializePWM0()
 {
     // Setup PWM pins PB6-Left Motor PB7-Right Motor
@@ -315,11 +359,11 @@ void InitializePWM0()
     GPIOPinConfigure(GPIO_PB6_M0PWM0);
     GPIOPinConfigure(GPIO_PB7_M0PWM1);
 
-    // Setup phase pins PE1-Left Phase PE2-Right Phase
-    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_1);
-    GPIOPinTypeGPIOOutput(GPIO_PORTE_BASE, GPIO_PIN_2);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
+    // Setup phase pins PA2-Left Phase PA3-Right Phase
+    GPIOPinTypeGPIOOutput(GPIO_PORTA_BASE, GPIO_PIN_2);
+    GPIOPinTypeGPIOOutput(GPIO_PORTA_BASE, GPIO_PIN_3);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
 
     // Sys Clock = 40Mhz PWMClock = 40/8 = 5MHz
     SysCtlPWMClockSet(SYSCTL_PWMDIV_8);
@@ -340,6 +384,18 @@ void InitializePWM0()
     // Enable generator and output
     PWMGenEnable(PWM0_BASE, PWM_GEN_0);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+}
+
+void InitializeADC0()
+{
+    ADCSequenceConfigure(ADC0_BASE, 1, ADC_TRIGGER_PROCESSOR, 0);
+    // Right Sensor
+    GPIOPinTypeADC(GPIO_PORTE_BASE, GPIO_PIN_3);
+    // Front Sensor
+    GPIOPinTypeADC(GPIO_PORTB_BASE, GPIO_PIN_4);
+    ADCSequenceStepConfigure(ADC0_BASE, 1, 0, ADC_CTL_CH0);
+    ADCSequenceStepConfigure(ADC0_BASE, 1, 1, ADC_CTL_CH10 | ADC_CTL_END | ADC_CTL_IE);
+    ADCSequenceEnable(ADC0_BASE, 1);
 }
 
 void InitializeGPIODInterrupt()
@@ -363,8 +419,8 @@ void RobotSTOP()
 
 void Forward()
 {
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, 0);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
@@ -379,8 +435,8 @@ void Brake()
 
 void Reverse()
 {
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_1, GPIO_PIN_1);
-    GPIOPinWrite(GPIO_PORTE_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, GPIO_PIN_3);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
@@ -406,7 +462,11 @@ int main(void)
 
     InitializeWTimer1();
 
+    InitializeWTimer2();
+
     InitializePWM0();
+
+    InitializeADC0();
 
     InitializeGPIODInterrupt();
 
@@ -417,14 +477,15 @@ int main(void)
 
     // Create Semaphores
     xTask1Semaphore = xSemaphoreCreateBinary();
+    xTask2Semaphore = xSemaphoreCreateBinary();
     xUART1Semaphore = xSemaphoreCreateBinary();
 
 //    xTaskCreate(vTask0, "Task 0", 256, NULL, 1, NULL);
     xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
+    xTaskCreate(vTask2, "Task 2", 256, NULL, 5, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
-
 
     // Start Task Scheduler
     vTaskStartScheduler();
