@@ -56,6 +56,7 @@ const uint8_t TAPE_MS_MIN = 10;
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 SemaphoreHandle_t xTask2Semaphore;
+QueueHandle_t xSensorDataQueue;
 
 void RobotSTART();
 void RobotSTOP();
@@ -70,6 +71,11 @@ typedef struct
     char *command;
     FunctionPointer funcPtr;
 } CommandCallback;
+
+typedef struct {
+    uint32_t rightSensorADC;
+    uint32_t frontSensorADC;
+} SensorData_t;
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
 volatile uint8_t commandIdx = 0;
@@ -237,26 +243,47 @@ void vTask1(void* pvParameters)
 // Task to update distance values
 void vTask2(void* pvParameters)
 {
+    SensorData_t sensorData;
     while (1)
     {
         if (xSemaphoreTake(xTask2Semaphore, portMAX_DELAY) == pdTRUE)
         {
+            // Read ADC Values
             ADCIntClear(ADC0_BASE, 1);
             ADCProcessorTrigger(ADC0_BASE, 1);
             while(!ADCIntStatus(ADC0_BASE, 1, false))
             {
             }
             ADCSequenceDataGet(ADC0_BASE, 1, (uint32_t*)adcBuffer);
-            uint32_t rightADCValue = adcBuffer[0];
-            uint32_t frontADCValue = adcBuffer[1];
-            UARTprintf("%i %i\n", rightADCValue, frontADCValue);
+            sensorData.rightSensorADC = adcBuffer[0];
+            sensorData.frontSensorADC = adcBuffer[1];
+
+            // Send sensor data to queue
+            xQueueSend(xSensorDataQueue, &sensorData, portMAX_DELAY);
         }
 //        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
 //        {
 //            UARTprintf("Task 0 is printing\n");
 //            xSemaphoreGive(xUART1Semaphore);
 //        }
+    }
+}
 
+
+// Task to update robot state
+void vTask3(void* pvParameters)
+{
+    SensorData_t sensorData;
+    while (1)
+    {
+        if (xQueueReceive(xSensorDataQueue, &sensorData, portMAX_DELAY))
+        {
+            if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+            {
+                UARTprintf("Task 3 is printing\n");
+                xSemaphoreGive(xUART1Semaphore);
+            }
+        }
     }
 }
 
@@ -347,7 +374,7 @@ void InitializeWTimer2()
     TimerIntEnable(WTIMER2_BASE, TIMER_TIMA_TIMEOUT);
     IntPrioritySet(INT_WTIMER2A, 0xA0);
     IntRegister(INT_WTIMER2A, WTimer2IntHandler);
-    TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * 0.05);
+    TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * 5);
     TimerEnable(WTIMER2_BASE, TIMER_A);
 }
 
@@ -479,10 +506,12 @@ int main(void)
     xTask1Semaphore = xSemaphoreCreateBinary();
     xTask2Semaphore = xSemaphoreCreateBinary();
     xUART1Semaphore = xSemaphoreCreateBinary();
+    xSensorDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
 //    xTaskCreate(vTask0, "Task 0", 256, NULL, 1, NULL);
     xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
-    xTaskCreate(vTask2, "Task 2", 256, NULL, 5, NULL);
+    xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
+    xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
