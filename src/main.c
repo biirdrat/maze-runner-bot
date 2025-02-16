@@ -46,28 +46,29 @@
 #include "semphr.h"
 
 #define COMMAND_MAX_LEN 4
-#define NUM_COMMANDS 5
+#define NUM_COMMANDS   5
 
+// Global constant definitions
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
 const uint16_t TAPE_MS_THRESHOLD = 2000;
-const uint8_t TAPE_MS_MIN = 10;
+const uint8_t  TAPE_MS_MIN = 10;
+const uint32_t CENTER_TARGET_ADC = 1800;
+const float CONTROL_ITERATION_TIME = 0.5;
 
-// Semaphore definitions
-SemaphoreHandle_t xUART1Semaphore;
-SemaphoreHandle_t xTask1Semaphore;
-SemaphoreHandle_t xTask2Semaphore;
-QueueHandle_t xSensorDataQueue;
+volatile float Kp = 1.5;
+volatile float Ki = 0.0;
+volatile float Kd = 0.0;
 
-void RobotSTART();
-void RobotSTOP();
-void Forward();
-void Brake();
-void Reverse();
-
+// Type definitions
 typedef void (*FunctionPointer)(void);
 
-typedef struct
-{
+typedef enum {
+    KEEPSTRAIGHT,
+    UTURN,
+    RIGHTTURN
+} ControlState;
+
+typedef struct {
     char *command;
     FunctionPointer funcPtr;
 } CommandCallback;
@@ -76,6 +77,12 @@ typedef struct {
     uint32_t rightSensorADC;
     uint32_t frontSensorADC;
 } SensorData_t;
+
+// Global variable declarations (e.g., semaphores and shared variables)
+SemaphoreHandle_t xUART1Semaphore;
+SemaphoreHandle_t xTask1Semaphore;
+SemaphoreHandle_t xTask2Semaphore;
+QueueHandle_t     xControlDataQueue;
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
 volatile uint8_t commandIdx = 0;
@@ -90,8 +97,27 @@ volatile bool wasOnTape = false;
 
 volatile uint32_t adcBuffer[2];
 
-const CommandCallback commandCallbacks[NUM_COMMANDS] =
-{
+volatile ControlState controlState = KEEPSTRAIGHT;
+
+volatile float errorPrior = 0;
+volatile float integralPrior = 0;
+
+// Function prototypes
+void RobotSTART(void);
+void RobotSTOP(void);
+void Forward(void);
+void Brake(void);
+void Reverse(void);
+void StartUTurn();
+void StopUTurn();
+void StartRightTurn();
+void StopRightTurn();
+void executePID(uint32_t rightADCValue);
+void SteerLeft(float adjustPercentage);
+void SteerRight(float adjustPercentage);
+
+// Global arrays or command lookup tables
+const CommandCallback commandCallbacks[NUM_COMMANDS] = {
     { "STR", RobotSTART },
     { "STP", RobotSTOP },
     { "FWD", Forward },
@@ -259,7 +285,7 @@ void vTask2(void* pvParameters)
             sensorData.frontSensorADC = adcBuffer[1];
 
             // Send sensor data to queue
-            xQueueSend(xSensorDataQueue, &sensorData, portMAX_DELAY);
+            xQueueSend(xControlDataQueue, &sensorData, portMAX_DELAY);
         }
 //        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
 //        {
@@ -276,11 +302,54 @@ void vTask3(void* pvParameters)
     SensorData_t sensorData;
     while (1)
     {
-        if (xQueueReceive(xSensorDataQueue, &sensorData, portMAX_DELAY))
+        if (xQueueReceive(xControlDataQueue, &sensorData, portMAX_DELAY))
         {
+            uint32_t rightADCValue = sensorData.rightSensorADC;
+            uint32_t frontADCValue = sensorData.frontSensorADC;
+
+            switch(controlState)
+            {
+            case KEEPSTRAIGHT:
+                // Initiate UTurn condition
+                if(frontADCValue > 9000)
+                {
+                    controlState = UTURN;
+                    StartUTurn();
+                }
+                // Initiate Right Turn condition
+                else if(rightADCValue > 30000)
+                {
+                    controlState = RIGHTTURN;
+                    StartRightTurn();
+                }
+                // Execute PID Control
+                else
+                {
+                    executePID(rightADCValue);
+                }
+                break;
+            case UTURN:
+                // Exit UTurn condition
+                if(frontADCValue < 1000)
+                {
+                    controlState = KEEPSTRAIGHT;
+                    StopUTurn();
+                }
+                break;
+            case RIGHTTURN:
+                // Exit Right Turn Condition
+                if(rightADCValue > 1800)
+                {
+                    controlState = KEEPSTRAIGHT;
+                    StopRightTurn();
+                }
+                break;
+            }
+
+
             if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
             {
-                UARTprintf("Task 3 is printing\n");
+                UARTprintf("3\n");
                 xSemaphoreGive(xUART1Semaphore);
             }
         }
@@ -374,7 +443,7 @@ void InitializeWTimer2()
     TimerIntEnable(WTIMER2_BASE, TIMER_TIMA_TIMEOUT);
     IntPrioritySet(INT_WTIMER2A, 0xA0);
     IntRegister(INT_WTIMER2A, WTimer2IntHandler);
-    TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * 5);
+    TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * CONTROL_ITERATION_TIME);
     TimerEnable(WTIMER2_BASE, TIMER_A);
 }
 
@@ -469,6 +538,79 @@ void Reverse()
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
 }
 
+
+void StartUTurn()
+{
+
+}
+
+
+void StartRightTurn()
+{
+
+}
+
+void StopUTurn()
+{
+
+}
+
+void StopRightTurn()
+{
+
+}
+
+void executePID(uint32_t rightADCValue)
+{
+    int errorADC = rightADCValue - CENTER_TARGET_ADC;
+    float errorPercent = errorADC/(float)CENTER_TARGET_ADC * 100;
+
+    float P = Kp * errorPercent;
+    float I = Ki * (errorPrior + errorPercent * (float)CONTROL_ITERATION_TIME);
+    float D = Kd * (errorPercent - errorPrior)/(float)CONTROL_ITERATION_TIME;
+
+    float output = fabs(P + I + D);
+    if(output > 100)
+    {
+        output = 100.0;
+    }
+
+    if(errorPercent >= 0)
+    {
+        SteerLeft(output);
+    }
+    else
+    {
+        SteerRight(output);
+    }
+}
+
+void SteerLeft(float adjustPercentage)
+{
+    uint32_t adjustAmountCount = totalPWMPeriodCount * (1 - adjustPercentage * 0.01);
+    if(adjustAmountCount == 0)
+    {
+        adjustAmountCount = 1;
+    }
+    // Slow down left motor pwm by a percentage
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, adjustAmountCount);
+    // Keep right motor pwm at max speed
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
+}
+
+void SteerRight(float adjustPercentage)
+{
+    uint32_t adjustAmountCount = totalPWMPeriodCount * (1 - adjustPercentage * 0.01);
+    if(adjustAmountCount == 0)
+    {
+        adjustAmountCount = 1;
+    }
+    // Keep left motor pwm at max speed
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
+    // Slow down right motor pwm by a percentage
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, adjustAmountCount);
+}
+
 int main(void)
 {
     // Set the clocking to run at 40 MHz from the PLL.
@@ -506,7 +648,7 @@ int main(void)
     xTask1Semaphore = xSemaphoreCreateBinary();
     xTask2Semaphore = xSemaphoreCreateBinary();
     xUART1Semaphore = xSemaphoreCreateBinary();
-    xSensorDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
+    xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
 //    xTaskCreate(vTask0, "Task 0", 256, NULL, 1, NULL);
     xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
