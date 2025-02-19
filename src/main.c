@@ -350,10 +350,7 @@ void vTask3(void* pvParameters)
                 break;
             }
 
-            if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
-            {
-                xSemaphoreGive(xUART1Semaphore);
-            }
+
         }
     }
 }
@@ -573,11 +570,12 @@ void executePID(uint32_t rightADCValue)
     int errorADC = rightADCValue - CENTER_TARGET_ADC;
     float errorPercent = errorADC/(float)CENTER_TARGET_ADC * 100;
 
-    float P = Kp * errorPercent;
-    float I = Ki * (errorPrior + errorPercent * (float)CONTROL_ITERATION_TIME);
-    float D = Kd * (errorPercent - errorPrior)/(float)CONTROL_ITERATION_TIME;
+    float P = errorPercent;
+    float I = integralPrior + errorPercent * (float)CONTROL_ITERATION_TIME;
+    float D = (errorPercent - errorPrior)/(float)CONTROL_ITERATION_TIME;
 
-    float output = fabs(P + I + D);
+    float output = fabs(Kp*P + Ki*I + Kd*D);
+
     if(output > 100)
     {
         output = 100.0;
@@ -591,6 +589,10 @@ void executePID(uint32_t rightADCValue)
     {
         SteerRight(output);
     }
+
+    errorPrior = errorPercent;
+    integralPrior = I;
+
 }
 
 void SteerLeft(float adjustPercentage)
