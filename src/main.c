@@ -52,12 +52,16 @@
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
 const uint16_t TAPE_MS_THRESHOLD = 2000;
 const uint8_t  TAPE_MS_MIN = 10;
-const uint32_t CENTER_TARGET_ADC = 1800;
-const float CONTROL_ITERATION_TIME = 0.5;
+const uint32_t CENTER_TARGET_ADC = 1900;
+const uint32_t START_UTURN_ADC = 2200;
+const uint32_t STOP_UTURN_ADC = 1500;
+const uint32_t START_RIGHT_TURN_ADC = 1300;
+const uint32_t STOP_RIGHT_TURN_ADC = 1700;
+const float CONTROL_ITERATION_TIME = 0.05;
 
-volatile float Kp = 1.5;
+volatile float Kp = 1.2;
 volatile float Ki = 0.0;
-volatile float Kd = 0.0;
+volatile float Kd = 0.02;
 
 // Type definitions
 typedef void (*FunctionPointer)(void);
@@ -103,8 +107,8 @@ volatile float errorPrior = 0;
 volatile float integralPrior = 0;
 
 // Function prototypes
-void RobotSTART(void);
-void RobotSTOP(void);
+void RobotStart(void);
+void RobotStop(void);
 void Forward(void);
 void Brake(void);
 void Reverse(void);
@@ -118,8 +122,8 @@ void SteerRight(float adjustPercentage);
 
 // Global arrays or command lookup tables
 const CommandCallback commandCallbacks[NUM_COMMANDS] = {
-    { "STR", RobotSTART },
-    { "STP", RobotSTOP },
+    { "STR", RobotStart },
+    { "STP", RobotStop },
     { "FWD", Forward },
     { "BRK", Brake },
     { "REV", Reverse },
@@ -227,23 +231,23 @@ void GPIODIntHandler(void)
             wasOnTape = false;
             onTapeElapsedCount = TimerValueGet64(WTIMER0_BASE) - onTapeStartCount;
             onTapeElapsedms = (uint64_t)(onTapeElapsedCount * 1.0/SysCtlClockGet() * 1000);
-            UARTprintf("%i\n", (int)onTapeElapsedms);
+//            UARTprintf("%i\n", (int)onTapeElapsedms);
 
             if(onTapeElapsedms > TAPE_MS_MIN)
             {
                 // Thin line crossed
                 if(onTapeElapsedms < TAPE_MS_THRESHOLD)
                 {
-                    GPIOPinWrite(GPIO_PORTF_BASE,
-                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-                                 GPIO_PIN_2);
+//                    GPIOPinWrite(GPIO_PORTF_BASE,
+//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+//                                 GPIO_PIN_2);
                 }
                 // Thick line crossed
                 else
                 {
-                    GPIOPinWrite(GPIO_PORTF_BASE,
-                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-                                 GPIO_PIN_3);
+//                    GPIOPinWrite(GPIO_PORTF_BASE,
+//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+//                                 GPIO_PIN_3);
                 }
             }
         }
@@ -311,16 +315,16 @@ void vTask3(void* pvParameters)
             {
             case KEEPSTRAIGHT:
                 // Initiate UTurn condition
-                if(frontADCValue > 9000)
+                if(frontADCValue > START_UTURN_ADC)
                 {
-                    controlState = UTURN;
                     StartUTurn();
+                    controlState = UTURN;
                 }
                 // Initiate Right Turn condition
-                else if(rightADCValue > 30000)
+                else if(rightADCValue < START_RIGHT_TURN_ADC)
                 {
-                    controlState = RIGHTTURN;
                     StartRightTurn();
+                    controlState = RIGHTTURN;
                 }
                 // Execute PID Control
                 else
@@ -330,26 +334,24 @@ void vTask3(void* pvParameters)
                 break;
             case UTURN:
                 // Exit UTurn condition
-                if(frontADCValue < 1000)
+                if(frontADCValue < STOP_UTURN_ADC)
                 {
-                    controlState = KEEPSTRAIGHT;
                     StopUTurn();
+                    controlState = KEEPSTRAIGHT;
                 }
                 break;
             case RIGHTTURN:
                 // Exit Right Turn Condition
-                if(rightADCValue > 1800)
+                if(rightADCValue >= STOP_RIGHT_TURN_ADC)
                 {
-                    controlState = KEEPSTRAIGHT;
                     StopRightTurn();
+                    controlState = KEEPSTRAIGHT;
                 }
                 break;
             }
 
-
             if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
             {
-                UARTprintf("3\n");
                 xSemaphoreGive(xUART1Semaphore);
             }
         }
@@ -433,7 +435,6 @@ void InitializeWTimer1()
     IntPrioritySet(INT_WTIMER1A, 0xA0);
     IntRegister(INT_WTIMER1A, WTimer1IntHandler);
     TimerLoadSet(WTIMER1_BASE, TIMER_A, SysCtlClockGet() * 0.007);
-    TimerEnable(WTIMER1_BASE, TIMER_A);
 }
 
 void InitializeWTimer2()
@@ -444,7 +445,6 @@ void InitializeWTimer2()
     IntPrioritySet(INT_WTIMER2A, 0xA0);
     IntRegister(INT_WTIMER2A, WTimer2IntHandler);
     TimerLoadSet(WTIMER2_BASE, TIMER_A, SysCtlClockGet() * CONTROL_ITERATION_TIME);
-    TimerEnable(WTIMER2_BASE, TIMER_A);
 }
 
 void InitializePWM0()
@@ -503,12 +503,14 @@ void InitializeGPIODInterrupt()
     IntPrioritySet(INT_GPIOD, 0xA0);
 }
 
-void RobotSTART()
+void RobotStart()
 {
-    UARTprintf("START CALLED\n");
+    TimerEnable(WTIMER1_BASE, TIMER_A);
+    TimerEnable(WTIMER2_BASE, TIMER_A);
+    PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, true);
 }
 
-void RobotSTOP()
+void RobotStop()
 {
     UARTprintf("STOP CALLED\n");
 }
@@ -527,6 +529,7 @@ void Brake()
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
     PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3, GPIO_PIN_1);
 }
 
 void Reverse()
@@ -541,23 +544,28 @@ void Reverse()
 
 void StartUTurn()
 {
-
-}
-
-
-void StartRightTurn()
-{
-
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, GPIO_PIN_2);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount);
 }
 
 void StopUTurn()
 {
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
+}
 
+void StartRightTurn()
+{
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
+    GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount * 0.5);
 }
 
 void StopRightTurn()
 {
-
 }
 
 void executePID(uint32_t rightADCValue)
@@ -639,24 +647,21 @@ int main(void)
 
     InitializeGPIODInterrupt();
 
-//    GPIOPinWrite(GPIO_PORTF_BASE,
-//                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-//                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3);
-
-
     // Create Semaphores
     xTask1Semaphore = xSemaphoreCreateBinary();
     xTask2Semaphore = xSemaphoreCreateBinary();
     xUART1Semaphore = xSemaphoreCreateBinary();
     xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
-//    xTaskCreate(vTask0, "Task 0", 256, NULL, 1, NULL);
     xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
     xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
     xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
+
+    SysCtlDelay(SysCtlClockGet()/3 * 2);
+    RobotStart();
 
     // Start Task Scheduler
     vTaskStartScheduler();
