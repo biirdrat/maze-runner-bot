@@ -55,13 +55,13 @@ const uint8_t  TAPE_MS_MIN = 10;
 const uint32_t CENTER_TARGET_ADC = 1900;
 const uint32_t START_UTURN_ADC = 2200;
 const uint32_t STOP_UTURN_ADC = 1500;
-const uint32_t START_RIGHT_TURN_ADC = 1300;
+const uint32_t START_RIGHT_TURN_ADC = 1200;
 const uint32_t STOP_RIGHT_TURN_ADC = 1700;
 const float CONTROL_ITERATION_TIME = 0.05;
 
 volatile float Kp = 1.2;
 volatile float Ki = 0.0;
-volatile float Kd = 0.02;
+volatile float Kd = 0.03;
 
 // Type definitions
 typedef void (*FunctionPointer)(void);
@@ -342,7 +342,7 @@ void vTask3(void* pvParameters)
                 break;
             case RIGHTTURN:
                 // Exit Right Turn Condition
-                if(rightADCValue >= STOP_RIGHT_TURN_ADC)
+                if(rightADCValue >= STOP_RIGHT_TURN_ADC || frontADCValue >= START_UTURN_ADC)
                 {
                     StopRightTurn();
                     controlState = KEEPSTRAIGHT;
@@ -350,10 +350,7 @@ void vTask3(void* pvParameters)
                 break;
             }
 
-            if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
-            {
-                xSemaphoreGive(xUART1Semaphore);
-            }
+
         }
     }
 }
@@ -573,11 +570,12 @@ void executePID(uint32_t rightADCValue)
     int errorADC = rightADCValue - CENTER_TARGET_ADC;
     float errorPercent = errorADC/(float)CENTER_TARGET_ADC * 100;
 
-    float P = Kp * errorPercent;
-    float I = Ki * (errorPrior + errorPercent * (float)CONTROL_ITERATION_TIME);
-    float D = Kd * (errorPercent - errorPrior)/(float)CONTROL_ITERATION_TIME;
+    float P = errorPercent;
+    float I = integralPrior + errorPercent * (float)CONTROL_ITERATION_TIME;
+    float D = (errorPercent - errorPrior)/(float)CONTROL_ITERATION_TIME;
 
-    float output = fabs(P + I + D);
+    float output = fabs(Kp*P + Ki*I + Kd*D);
+
     if(output > 100)
     {
         output = 100.0;
@@ -591,6 +589,10 @@ void executePID(uint32_t rightADCValue)
     {
         SteerRight(output);
     }
+
+    errorPrior = errorPercent;
+    integralPrior = I;
+
 }
 
 void SteerLeft(float adjustPercentage)
