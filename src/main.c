@@ -50,8 +50,8 @@
 
 // Global constant definitions
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
-const uint16_t TAPE_MS_THRESHOLD = 2000;
-const uint8_t  TAPE_MS_MIN = 10;
+const uint16_t THIN_TAPE_THRESHOLD_MS = 100;
+const uint8_t  TAPE_MIN_MS = 15;
 const uint32_t CENTER_TARGET_ADC = 1900;
 const uint32_t START_UTURN_ADC = 2200;
 const uint32_t STOP_UTURN_ADC = 1500;
@@ -98,6 +98,7 @@ volatile uint64_t onTapeStartCount = 0;
 volatile uint64_t onTapeElapsedCount = 0;
 volatile uint64_t onTapeElapsedms = 0;
 volatile bool wasOnTape = false;
+volatile uint8_t thinLinesCrossed = 0;
 
 volatile uint32_t adcBuffer[2];
 
@@ -231,23 +232,40 @@ void GPIODIntHandler(void)
             wasOnTape = false;
             onTapeElapsedCount = TimerValueGet64(WTIMER0_BASE) - onTapeStartCount;
             onTapeElapsedms = (uint64_t)(onTapeElapsedCount * 1.0/SysCtlClockGet() * 1000);
-//            UARTprintf("%i\n", (int)onTapeElapsedms);
 
-            if(onTapeElapsedms > TAPE_MS_MIN)
+
+
+            if(onTapeElapsedms > TAPE_MIN_MS)
             {
-                // Thin line crossed
-                if(onTapeElapsedms < TAPE_MS_THRESHOLD)
+                if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
                 {
-//                    GPIOPinWrite(GPIO_PORTF_BASE,
-//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-//                                 GPIO_PIN_2);
+                    UARTprintf("%i\n", (int)onTapeElapsedms);
+                    xSemaphoreGive(xUART1Semaphore);
+                }
+                // Thin line crossed
+                if(onTapeElapsedms < THIN_TAPE_THRESHOLD_MS)
+                {
+                    thinLinesCrossed++;
+
+                    if(thinLinesCrossed == 1)
+                    {
+                        GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_3);
+                    }
+                    else if(thinLinesCrossed == 2)
+                    {
+                        GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_2);
+                    }
                 }
                 // Thick line crossed
                 else
                 {
-//                    GPIOPinWrite(GPIO_PORTF_BASE,
-//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-//                                 GPIO_PIN_3);
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_1);
                 }
             }
         }
