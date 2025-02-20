@@ -55,13 +55,13 @@ const uint8_t  TAPE_MS_MIN = 10;
 const uint32_t CENTER_TARGET_ADC = 1900;
 const uint32_t START_UTURN_ADC = 2200;
 const uint32_t STOP_UTURN_ADC = 1500;
-const uint32_t START_RIGHT_TURN_ADC = 1300;
+const uint32_t START_RIGHT_TURN_ADC = 1200;
 const uint32_t STOP_RIGHT_TURN_ADC = 1700;
 const float CONTROL_ITERATION_TIME = 0.05;
 
 volatile float Kp = 1.2;
 volatile float Ki = 0.0;
-volatile float Kd = 0.02;
+volatile float Kd = 0.03;
 
 // Type definitions
 typedef void (*FunctionPointer)(void);
@@ -342,7 +342,7 @@ void vTask3(void* pvParameters)
                 break;
             case RIGHTTURN:
                 // Exit Right Turn Condition
-                if(rightADCValue >= STOP_RIGHT_TURN_ADC)
+                if(rightADCValue >= STOP_RIGHT_TURN_ADC || frontADCValue >= START_UTURN_ADC)
                 {
                     StopRightTurn();
                     controlState = KEEPSTRAIGHT;
