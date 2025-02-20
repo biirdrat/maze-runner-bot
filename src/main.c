@@ -47,6 +47,7 @@
 
 #define COMMAND_MAX_LEN 4
 #define NUM_COMMANDS   5
+#define MAX_DATA_NUM 20
 
 // Global constant definitions
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
@@ -59,9 +60,9 @@ const uint32_t START_RIGHT_TURN_ADC = 1200;
 const uint32_t STOP_RIGHT_TURN_ADC = 1700;
 const float CONTROL_ITERATION_TIME = 0.05;
 
-volatile float Kp = 1.2;
-volatile float Ki = 0.0;
-volatile float Kd = 0.03;
+volatile const float Kp = 1.2;
+volatile const float Ki = 0.0;
+volatile const float Kd = 0.03;
 
 // Type definitions
 typedef void (*FunctionPointer)(void);
@@ -86,6 +87,7 @@ typedef struct {
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 SemaphoreHandle_t xTask2Semaphore;
+SemaphoreHandle_t xTask4Semaphore;
 QueueHandle_t     xControlDataQueue;
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
@@ -107,6 +109,15 @@ volatile ControlState controlState = KEEPSTRAIGHT;
 volatile float errorPrior = 0;
 volatile float integralPrior = 0;
 
+bool dataCollectionEnabled = false;
+int pingBuffer[MAX_DATA_NUM];
+int pongBuffer[MAX_DATA_NUM];
+int* collectBuffer = pingBuffer;
+int* sendBuffer;
+
+uint8_t currentDataIdx = 0;
+uint8_t endDataIdx = 0;
+
 // Function prototypes
 void RobotStart(void);
 void RobotStop(void);
@@ -120,6 +131,7 @@ void StopRightTurn();
 void executePID(uint32_t rightADCValue);
 void SteerLeft(float adjustPercentage);
 void SteerRight(float adjustPercentage);
+void SendData();
 
 // Global arrays or command lookup tables
 const CommandCallback commandCallbacks[NUM_COMMANDS] = {
@@ -252,6 +264,7 @@ void GPIODIntHandler(void)
                         GPIOPinWrite(GPIO_PORTF_BASE,
                                  GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
                                  GPIO_PIN_3);
+                        dataCollectionEnabled = true;
                     }
                     else if(thinLinesCrossed == 2)
                     {
@@ -318,7 +331,7 @@ void vTask2(void* pvParameters)
 }
 
 
-// Task to update robot state
+// Task to control robot
 void vTask3(void* pvParameters)
 {
     SensorData_t sensorData;
@@ -372,6 +385,19 @@ void vTask3(void* pvParameters)
         }
     }
 }
+
+// Task to send data
+void vTask4(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask4Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+
+        }
+    }
+}
+
 
 void EnableSystemPeripherals()
 {
@@ -583,10 +609,30 @@ void StopRightTurn()
 {
 }
 
+//bool dataCollectionEnabled = false;
+//int pingBuffer[MAX_DATA_NUM];
+//int pongBuffer[MAX_DATA_NUM];
+//int* collectBuffer = pingBuffer;
+//int* sendBuffer;
+//uint8_t currentDataIdx = 0;
+//uint8_t endDataIdx = 0;
+
 void executePID(uint32_t rightADCValue)
 {
-    int errorADC = rightADCValue - CENTER_TARGET_ADC;
+    int errorADC = rightADCValue - (int)CENTER_TARGET_ADC;
     float errorPercent = errorADC/(float)CENTER_TARGET_ADC * 100;
+
+    // Collect ADC error if data collection is enabled
+    if(dataCollectionEnabled == true)
+    {
+        collectBuffer[currentDataIdx] = errorADC;
+        currentDataIdx++;
+
+        if(currentDataIdx == MAX_DATA_NUM)
+        {
+            SendData();
+        }
+    }
 
     float P = errorPercent;
     float I = integralPrior + errorPercent * (float)CONTROL_ITERATION_TIME;
@@ -639,6 +685,26 @@ void SteerRight(float adjustPercentage)
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, adjustAmountCount);
 }
 
+void SendData()
+{
+    // Save the index of where data ends
+    endDataIdx = currentDataIdx;
+    currentDataIdx = 0;
+
+    // Select buffer to send data
+    sendBuffer = collectBuffer;
+
+    // Swap collect buffer
+    if(collectBuffer = pingBuffer)
+    {
+        collectBuffer = pongBuffer;
+    }
+    else
+    {
+        collectBuffer = pingBuffer;
+    }
+    xSemaphoreGive(xTask4Semaphore);
+}
 int main(void)
 {
     // Set the clocking to run at 40 MHz from the PLL.
@@ -673,9 +739,10 @@ int main(void)
     xUART1Semaphore = xSemaphoreCreateBinary();
     xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
-    xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
-    xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
-    xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
+    xTaskCreate(vTask1, "Task 1", 256, NULL, 8, NULL);
+    xTaskCreate(vTask2, "Task 2", 256, NULL, 3, NULL);
+    xTaskCreate(vTask3, "Task 3", 256, NULL, 2, NULL);
+    xTaskCreate(vTask4, "Task 4", 256, NULL, 1, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
