@@ -323,11 +323,6 @@ void vTask2(void* pvParameters)
             // Send sensor data to queue
             xQueueSend(xControlDataQueue, &sensorData, portMAX_DELAY);
         }
-//        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
-//        {
-//            UARTprintf("Task 0 is printing\n");
-//            xSemaphoreGive(xUART1Semaphore);
-//        }
     }
 }
 
@@ -760,7 +755,7 @@ int main(void)
     xUART1Semaphore = xSemaphoreCreateBinary();
     xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
-    xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
+    xTaskCreate(vTask1, "Task 1", 256, NULL, 10, NULL);
     xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
     xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
     xTaskCreate(vTask4, "Task 4", 256, NULL, 1, NULL);
