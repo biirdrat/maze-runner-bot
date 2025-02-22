@@ -88,6 +88,7 @@ SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 SemaphoreHandle_t xTask2Semaphore;
 SemaphoreHandle_t xTask4Semaphore;
+SemaphoreHandle_t xTask5Semaphore;
 QueueHandle_t     xControlDataQueue;
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
@@ -225,6 +226,8 @@ void WTimer2IntHandler(void)
 
 void GPIODIntHandler(void)
 {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
     GPIOIntClear(GPIO_PORTD_BASE, GPIO_INT_PIN_2);
     decayElapsedCount = TimerValueGet64(WTIMER0_BASE) - decayStartCount;
 
@@ -280,6 +283,14 @@ void GPIODIntHandler(void)
                     GPIOPinWrite(GPIO_PORTF_BASE,
                                  GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
                                  GPIO_PIN_1);
+                    // Give the semaphore and check if a higher-priority task was woken
+                    xSemaphoreGiveFromISR(xTask5Semaphore, &xHigherPriorityTaskWoken);
+
+                    // Yield if a higher-priority task was woken
+                    if (xHigherPriorityTaskWoken == pdTRUE)
+                    {
+                        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+                    }
                 }
             }
         }
@@ -376,8 +387,6 @@ void vTask3(void* pvParameters)
                 }
                 break;
             }
-
-
         }
     }
 }
@@ -390,6 +399,31 @@ void vTask4(void* pvParameters)
         if (xSemaphoreTake(xTask4Semaphore, portMAX_DELAY) == pdTRUE)
         {
             TransmitData();
+        }
+    }
+}
+
+// Task to stop stop the robot
+void vTask5(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask5Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            TimerDisable(WTIMER1_BASE, TIMER_A);
+            TimerDisable(WTIMER2_BASE, TIMER_A);
+            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
+            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
+            PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+
+            int i;
+            for(i = 0; i < 120; i++)
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
+                SysCtlDelay(SysCtlClockGet()/3 * 0.25);
+                GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
+                SysCtlDelay(SysCtlClockGet()/3 * 0.25);
+            }
         }
     }
 }
@@ -548,7 +582,7 @@ void RobotStart()
 
 void RobotStop()
 {
-    UARTprintf("STOP CALLED\n");
+    xSemaphoreGive(xTask5Semaphore);
 }
 
 void Forward()
@@ -752,13 +786,15 @@ int main(void)
     xTask1Semaphore = xSemaphoreCreateBinary();
     xTask2Semaphore = xSemaphoreCreateBinary();
     xTask4Semaphore = xSemaphoreCreateBinary();
+    xTask5Semaphore = xSemaphoreCreateBinary();
     xUART1Semaphore = xSemaphoreCreateBinary();
     xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
     xTaskCreate(vTask1, "Task 1", 256, NULL, 10, NULL);
     xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
     xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
-    xTaskCreate(vTask4, "Task 4", 256, NULL, 1, NULL);
+    xTaskCreate(vTask4, "Task 4", 256, NULL, 2, NULL);
+    xTaskCreate(vTask5, "Task 5", 256, NULL, 1, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
