@@ -55,12 +55,12 @@ const uint16_t THIN_TAPE_THRESHOLD_MS = 100;
 const uint8_t  TAPE_MIN_MS = 15;
 const uint32_t CENTER_TARGET_ADC = 1900;
 const uint32_t START_UTURN_ADC = 2200;
-const uint32_t STOP_UTURN_ADC = 1500;
+const uint32_t STOP_UTURN_ADC = 1700;
 const uint32_t START_RIGHT_TURN_ADC = 1200;
 const uint32_t STOP_RIGHT_TURN_ADC = 1700;
 const float CONTROL_ITERATION_TIME = 0.05;
 
-volatile float Kp = 1.2;
+volatile float Kp = 1.4;
 volatile float Ki = 0.0;
 volatile float Kd = 0.03;
 
@@ -670,7 +670,7 @@ void StartRightTurn()
     GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
     GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
-    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount * 0.5);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount * 0.4);
 }
 
 void StopRightTurn()
