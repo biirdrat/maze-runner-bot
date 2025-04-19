@@ -47,19 +47,20 @@
 
 #define COMMAND_MAX_LEN 4
 #define NUM_COMMANDS   5
+#define MAX_DATA_NUM 20
 
 // Global constant definitions
 const uint32_t DECAY_COUNT_THRESHOLD = 20000;
-const uint16_t TAPE_MS_THRESHOLD = 2000;
-const uint8_t  TAPE_MS_MIN = 10;
+const uint16_t THIN_TAPE_THRESHOLD_MS = 100;
+const uint8_t  TAPE_MIN_MS = 15;
 const uint32_t CENTER_TARGET_ADC = 1900;
 const uint32_t START_UTURN_ADC = 2200;
-const uint32_t STOP_UTURN_ADC = 1500;
+const uint32_t STOP_UTURN_ADC = 1700;
 const uint32_t START_RIGHT_TURN_ADC = 1200;
 const uint32_t STOP_RIGHT_TURN_ADC = 1700;
 const float CONTROL_ITERATION_TIME = 0.05;
 
-volatile float Kp = 1.2;
+volatile float Kp = 1.4;
 volatile float Ki = 0.0;
 volatile float Kd = 0.03;
 
@@ -86,7 +87,10 @@ typedef struct {
 SemaphoreHandle_t xUART1Semaphore;
 SemaphoreHandle_t xTask1Semaphore;
 SemaphoreHandle_t xTask2Semaphore;
-QueueHandle_t     xControlDataQueue;
+SemaphoreHandle_t xTask4Semaphore;
+SemaphoreHandle_t xTask5Semaphore;
+SemaphoreHandle_t xTask6Semaphore;
+QueueHandle_t xControlDataQueue;
 
 volatile char commandBuffer[COMMAND_MAX_LEN];
 volatile uint8_t commandIdx = 0;
@@ -98,6 +102,7 @@ volatile uint64_t onTapeStartCount = 0;
 volatile uint64_t onTapeElapsedCount = 0;
 volatile uint64_t onTapeElapsedms = 0;
 volatile bool wasOnTape = false;
+volatile uint8_t thinLinesCrossed = 0;
 
 volatile uint32_t adcBuffer[2];
 
@@ -106,7 +111,16 @@ volatile ControlState controlState = KEEPSTRAIGHT;
 volatile float errorPrior = 0;
 volatile float integralPrior = 0;
 
-// Function prototypes
+bool dataCollectionEnabled = false;
+int pingBuffer[MAX_DATA_NUM];
+int pongBuffer[MAX_DATA_NUM];
+int* collectBuffer = pingBuffer;
+int* sendBuffer;
+
+uint8_t currentDataIdx = 0;
+uint8_t endDataIdx = 0;
+
+// Function Headers
 void RobotStart(void);
 void RobotStop(void);
 void Forward(void);
@@ -119,6 +133,7 @@ void StopRightTurn();
 void executePID(uint32_t rightADCValue);
 void SteerLeft(float adjustPercentage);
 void SteerRight(float adjustPercentage);
+void SignalDataTransmit();
 
 // Global arrays or command lookup tables
 const CommandCallback commandCallbacks[NUM_COMMANDS] = {
@@ -211,6 +226,8 @@ void WTimer2IntHandler(void)
 
 void GPIODIntHandler(void)
 {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
     GPIOIntClear(GPIO_PORTD_BASE, GPIO_INT_PIN_2);
     decayElapsedCount = TimerValueGet64(WTIMER0_BASE) - decayStartCount;
 
@@ -231,23 +248,53 @@ void GPIODIntHandler(void)
             wasOnTape = false;
             onTapeElapsedCount = TimerValueGet64(WTIMER0_BASE) - onTapeStartCount;
             onTapeElapsedms = (uint64_t)(onTapeElapsedCount * 1.0/SysCtlClockGet() * 1000);
-//            UARTprintf("%i\n", (int)onTapeElapsedms);
 
-            if(onTapeElapsedms > TAPE_MS_MIN)
+            if(onTapeElapsedms > TAPE_MIN_MS)
             {
+                UARTprintf("%i\n", (int)onTapeElapsedms);
                 // Thin line crossed
-                if(onTapeElapsedms < TAPE_MS_THRESHOLD)
+                if(onTapeElapsedms < THIN_TAPE_THRESHOLD_MS)
                 {
-//                    GPIOPinWrite(GPIO_PORTF_BASE,
-//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-//                                 GPIO_PIN_2);
+                    thinLinesCrossed++;
+
+                    if(thinLinesCrossed == 1)
+                    {
+                        GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_3);
+                        dataCollectionEnabled = true;
+                    }
+                    else if(thinLinesCrossed == 2)
+                    {
+                        GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_2);
+                        dataCollectionEnabled = false;
+
+                        // Give the semaphore and check if a higher-priority task was woken
+                        xSemaphoreGiveFromISR(xTask6Semaphore, &xHigherPriorityTaskWoken);
+
+                        // Yield if a higher-priority task was woken
+                        if (xHigherPriorityTaskWoken == pdTRUE)
+                        {
+                            portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+                        }
+                    }
                 }
                 // Thick line crossed
                 else
                 {
-//                    GPIOPinWrite(GPIO_PORTF_BASE,
-//                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
-//                                 GPIO_PIN_3);
+                    GPIOPinWrite(GPIO_PORTF_BASE,
+                                 GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3,
+                                 GPIO_PIN_1);
+                    // Give the semaphore and check if a higher-priority task was woken
+                    xSemaphoreGiveFromISR(xTask5Semaphore, &xHigherPriorityTaskWoken);
+
+                    // Yield if a higher-priority task was woken
+                    if (xHigherPriorityTaskWoken == pdTRUE)
+                    {
+                        portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+                    }
                 }
             }
         }
@@ -291,11 +338,6 @@ void vTask2(void* pvParameters)
             // Send sensor data to queue
             xQueueSend(xControlDataQueue, &sensorData, portMAX_DELAY);
         }
-//        if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
-//        {
-//            UARTprintf("Task 0 is printing\n");
-//            xSemaphoreGive(xUART1Semaphore);
-//        }
     }
 }
 
@@ -349,8 +391,78 @@ void vTask3(void* pvParameters)
                 }
                 break;
             }
+        }
+    }
+}
 
+// Task to send data
+void vTask4(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask4Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            // Print data header
+            if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+            {
+                UARTprintf("AB12");
+                xSemaphoreGive(xUART1Semaphore);
+            }
 
+            // Print each data value
+            int i;
+            for(i = 0; i < endDataIdx; i++)
+            {
+                if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+                {
+                    UARTprintf(" %i", sendBuffer[i]);
+                    xSemaphoreGive(xUART1Semaphore);
+                }
+            }
+
+            // Print data footer
+            if (xSemaphoreTake(xUART1Semaphore, portMAX_DELAY) == pdTRUE)
+            {
+                UARTprintf("\r\n");
+                xSemaphoreGive(xUART1Semaphore);
+            }
+        }
+    }
+}
+
+// Task to prepare to transmit all current data after 2nd line is crossed
+void vTask6(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask6Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            SignalDataTransmit();
+        }
+    }
+}
+
+// Task to stop stop the robot
+void vTask5(void* pvParameters)
+{
+    while (1)
+    {
+        if (xSemaphoreTake(xTask5Semaphore, portMAX_DELAY) == pdTRUE)
+        {
+            TimerDisable(WTIMER1_BASE, TIMER_A);
+            TimerDisable(WTIMER2_BASE, TIMER_A);
+            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, 1);
+            PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, 1);
+            PWMOutputState(PWM0_BASE, PWM_OUT_0_BIT | PWM_OUT_1_BIT, false);
+
+            int i;
+            for(i = 0; i < 120; i++)
+            {
+                GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, GPIO_PIN_1);
+                SysCtlDelay(SysCtlClockGet()/3 * 0.25);
+                GPIOPinWrite(GPIO_PORTF_BASE, GPIO_PIN_1, 0);
+                SysCtlDelay(SysCtlClockGet()/3 * 0.25);
+            }
         }
     }
 }
@@ -509,7 +621,7 @@ void RobotStart()
 
 void RobotStop()
 {
-    UARTprintf("STOP CALLED\n");
+    xSemaphoreGive(xTask5Semaphore);
 }
 
 void Forward()
@@ -558,7 +670,7 @@ void StartRightTurn()
     GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_2, 0);
     GPIOPinWrite(GPIO_PORTA_BASE, GPIO_PIN_3, 0);
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_0, totalPWMPeriodCount);
-    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount * 0.5);
+    PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, totalPWMPeriodCount * 0.4);
 }
 
 void StopRightTurn()
@@ -567,8 +679,19 @@ void StopRightTurn()
 
 void executePID(uint32_t rightADCValue)
 {
-    int errorADC = rightADCValue - CENTER_TARGET_ADC;
+    int errorADC = rightADCValue - (int)CENTER_TARGET_ADC;
     float errorPercent = errorADC/(float)CENTER_TARGET_ADC * 100;
+
+    // Collect ADC error if data collection is enabled
+    if(dataCollectionEnabled == true)
+    {
+        collectBuffer[currentDataIdx] = abs(errorADC);
+        currentDataIdx++;
+        if(currentDataIdx == MAX_DATA_NUM)
+        {
+            SignalDataTransmit();
+        }
+    }
 
     float P = errorPercent;
     float I = integralPrior + errorPercent * (float)CONTROL_ITERATION_TIME;
@@ -621,6 +744,27 @@ void SteerRight(float adjustPercentage)
     PWMPulseWidthSet(PWM0_BASE, PWM_OUT_1, adjustAmountCount);
 }
 
+void SignalDataTransmit()
+{
+    // Save the index of where data ends
+    endDataIdx = currentDataIdx;
+    currentDataIdx = 0;
+
+    // Select buffer to send data
+    sendBuffer = collectBuffer;
+
+    // Swap collect buffer
+    if(collectBuffer == pingBuffer)
+    {
+        collectBuffer = pongBuffer;
+    }
+    else
+    {
+        collectBuffer = pingBuffer;
+    }
+    xSemaphoreGive(xTask4Semaphore);
+}
+
 int main(void)
 {
     // Set the clocking to run at 40 MHz from the PLL.
@@ -652,12 +796,19 @@ int main(void)
     // Create Semaphores
     xTask1Semaphore = xSemaphoreCreateBinary();
     xTask2Semaphore = xSemaphoreCreateBinary();
+    xTask4Semaphore = xSemaphoreCreateBinary();
+    xTask5Semaphore = xQueueCreate(2, 0);
+    xTask6Semaphore = xSemaphoreCreateBinary();
+
     xUART1Semaphore = xSemaphoreCreateBinary();
     xControlDataQueue = xQueueCreate(5, sizeof(SensorData_t));  // Queue for sensor data
 
-    xTaskCreate(vTask1, "Task 1", 256, NULL, 2, NULL);
+    xTaskCreate(vTask1, "Task 1", 256, NULL, 10, NULL);
     xTaskCreate(vTask2, "Task 2", 256, NULL, 8, NULL);
-    xTaskCreate(vTask3, "Task 3", 256, NULL, 3, NULL);
+    xTaskCreate(vTask3, "Task 3", 256, NULL, 4, NULL);
+    xTaskCreate(vTask4, "Task 4", 256, NULL, 3, NULL);
+    xTaskCreate(vTask5, "Task 5", 256, NULL, 2, NULL);
+    xTaskCreate(vTask6, "Task 6", 256, NULL, 1, NULL);
 
     xSemaphoreGive(xUART1Semaphore);
     UARTprintf("Running main program.\n");
